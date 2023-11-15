@@ -2,7 +2,7 @@ import os
 import sys
 
 sys.path.append(os.getcwd())
-
+from PIL import Image
 import numpy as np
 import pandas as pd
 import torch
@@ -35,6 +35,9 @@ class UNetTestDataClass(Dataset):
     def __len__(self):
         return len(self.images_list)
 
+transform = Compose([Resize((512, 512), interpolation=InterpolationMode.BILINEAR),
+                     PILToTensor()])
+
 path = '/kaggle/input/bkai-igh-neopolyp/test/test/'
 unet_test_dataset = UNetTestDataClass(path, transform)
 test_dataloader = DataLoader(unet_test_dataset, batch_size=8, shuffle=True)
@@ -51,29 +54,60 @@ for i, (data, path, h, w) in enumerate(test_dataloader):
     img = data.cuda().to(device)
     break
 
-model.eval()
-if not os.path.isdir("/kaggle/working/predicted_masks"):
-    os.mkdir("/kaggle/working/predicted_masks")
+# Load the pretrained model
+check_point = torch.load('model.pth', map_location=device)
+model.load_state_dict(check_point['model'])
 
-for _, (img, path, H, W) in enumerate(test_dataloader):
-    a = path
-    b = img.cuda().to(device)
-    h = H
-    w = W
+color_mapping = {
+    0: (0, 0, 0),  # Background
+    1: (255, 0, 0),  # Neoplastic polyp
+    2: (0, 255, 0)  # Non-neoplastic polyp
+}
+
+
+def mask_to_rgb(mask, color_mapping):
+    output = np.zeros((mask.shape[0], mask.shape[1], 3))
+    for key in color_mapping.keys():
+        output[mask == key] = color_mapping[key]
+
+    return np.uint8(output)
+
+model.eval()
+
+for idx, img_name in enumerate(os.listdir(path)):
+    print(f'Predicted {idx + 1}/200 ...\r', end='')
+    test_img_path = os.path.join(path, img_name)
+
+    img = cv2.imread(test_img_path)
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+    width, height = img.shape[1], img.shape[0]
+
+    # Resize the image to 256x256
+    img = cv2.resize(img, (256, 256))
+
+    # Transform the image
+    transformed_img = transform(image=img)['image'].unsqueeze(0).to(device)
 
     with torch.no_grad():
-        predicted_mask = model(b)
-    for i in range(len(a)):
-        image_id = a[i].split('/')[-1].split('.')[0]
-        filename = image_id + ".png"
-        mask2img = Resize((h[i].item(), w[i].item()), interpolation=InterpolationMode.NEAREST)(
-            ToPILImage()(F.one_hot(torch.argmax(predicted_mask[i], 0)).permute(2, 0, 1).float()))
-        mask2img.save(os.path.join("/kaggle/working/predicted_masks/", filename))
+        out_mask = model.forward(transformed_img).squeeze(0).cpu().numpy().transpose(1, 2, 0)  # (256, 256, 3)
 
+    # Resize the mask to the original size
+    out_mask = cv2.resize(out_mask, (width, height))
+    out_mask = np.argmax(out_mask, axis=2)
+
+    # Convert the mask to RGB
+    rgb_mask = mask_to_rgb(out_mask, color_mapping)
+    rgb_mask = cv2.cvtColor(rgb_mask, cv2.COLOR_RGB2BGR)
+
+    # Save the mask
+    save_dir = '/kaggle/working/predict_mask'
+    os.makedirs(save_dir, exist_ok=True)
+    save_path = os.path.join(save_dir, img_name)
+    cv2.imwrite(save_path, rgb_mask)
 
 def rle_to_string(runs):
     return ' '.join(str(x) for x in runs)
-
 
 def rle_encode_one_mask(mask):
     pixels = mask.flatten()
