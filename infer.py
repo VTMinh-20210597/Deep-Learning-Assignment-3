@@ -83,8 +83,7 @@ for idx, img_name in enumerate(os.listdir(path)):
 
     width, height = img.shape[1], img.shape[0]
 
-    # Resize the image to 256x256
-    img = cv2.resize(img, (256, 256))
+    img = cv2.resize(img, (512, 512))
 
     # Transform the image
     transformed_img = transform(image=img)['image'].unsqueeze(0).to(device)
